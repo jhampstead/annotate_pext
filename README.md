@@ -1,7 +1,7 @@
 # annotate_pext
-Fast proportion expressed across transcripts (PEXT) score calculation from VEP-annotated VCF files
+Fast proportion expressed across transcripts (PEXT) score calculation from VEP-annotated VCF files.
 
-The calculation of PEXT scores is based on the 2020 paper [Transcript expression-aware annotation improves rare variant interpretation](https://www.nature.com/articles/s41586-020-2329-2) by *Cummings et al.*
+The calculation of PEXT scores is based on the 2020 paper *[Transcript expression-aware annotation improves rare variant interpretation](https://www.nature.com/articles/s41586-020-2329-2)* by Cummings *et al.*
 
 ## Running annotate_pext
 
