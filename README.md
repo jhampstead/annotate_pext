@@ -14,7 +14,7 @@ module spider htslib
 module load bioinf/htslib/1.9
 ```
 
-If HTSLib is unavailable on your system, you can [download HTSLib here](https://www.htslib.org/download/) and [install from source](https://github.com/samtools/htslib/blob/develop/INSTALL). If ```extract_vcf``` can't find HTSLib at runtime, execution will fail with ```./annotate_pext: error while loading shared libraries: libhts.so.2: cannot open shared object file: No such file or directory```. I compile and run with HTSLib 1.9; other versions of HTSLib have not been tested and may cause unexpected behaviour.
+If HTSLib is unavailable on your system, you can [download HTSLib here](https://www.htslib.org/download/) and [install from source](https://github.com/samtools/htslib/blob/develop/INSTALL). If ```annotate_pext``` can't find HTSLib at runtime, execution will fail with ```./annotate_pext: error while loading shared libraries: libhts.so.2: cannot open shared object file: No such file or directory```. I compile and run with HTSLib 1.9; other versions of HTSLib have not been tested and may cause unexpected behaviour.
 
 ```annotate_pext``` requires the following command line arguments:
 * An isoform expression matrix <isoform_expression_matrix.tsv>. The rows of this file should represent transcripts, while the columns should represent tissues. This script has been optimised for use with the GTEx v8 isoform expression matrix provided at ```test/GTEx_median_tissue_expression_matrix.tsv```. Other expression matrices should adhere to this format.
