@@ -32,6 +32,7 @@ To test whether ```annotate_pext``` is working correctly, you can run the follow
 ```
 ./annotate_pext test/GTEx_median_tissue_expression_matrix.tsv test/test.vcf test/test_out.vcf
 ```
+```annotate_pext``` runs in about 20 seconds on an ~150,000 line VCF file on a single CPU.
 
 ## Compiling annotate_pext
 
