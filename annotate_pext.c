@@ -38,6 +38,7 @@ typedef struct {
     char *gene_id;
     char *transcript_id;
     char *consequence;
+    char *loftee;
     bool calculate_pext;
 } Annotation;
 
@@ -49,11 +50,24 @@ typedef struct {
     int num_allocations;
 } Variant;
 
+// Structure to hold unique annotations over which to calculate PEXT
+typedef struct {
+    char *gene_id;
+    char *consequence;
+    char *loftee;
+} UniqueAnnotation;
+
+// Structure to hold PEXT annotation
 typedef struct {
     double *mean_expression_proportion;
-    int num_unique_consequences;
-    char **unique_consequences;
+    int num_unique_annotations;
+    UniqueAnnotation *unique_annotations;
 } PextAnnotation;
+
+int index_of(char *s, char delimiter) {
+    char *occurrence = strchr(s, delimiter);
+    return (int)(occurrence - s);
+}
 
 // Strip gene and transcript versions from Ensembl identifiers
 char *strip_version(char *id) {
@@ -93,14 +107,12 @@ ExpressionMatrix* read_expression_matrix(const char *filename, char *tissue_grou
             // Count tissues
             while (token) {
                 // Match tissues to tissue_groups
-                bool match = false;
                 if (tissue_group) {
                     for (int i = 0; i < num_tissue_groups; i++) {
                         if (strncmp(tissue_groups[i], token, strlen(tissue_groups[i])) == 0) {
                             matrix->num_tissues++;
                             matrix->tissue_names = realloc(matrix->tissue_names, matrix->num_tissues * sizeof(char *));
                             matrix->tissue_names[matrix->num_tissues - 1] = strdup(token);
-                            match = true;
                             break;  // Exit the for loop once matched
                         }
                     }
@@ -125,6 +137,8 @@ ExpressionMatrix* read_expression_matrix(const char *filename, char *tissue_grou
         if (matrix->num_genes == 0 || strcmp(gene_id, matrix->genes[matrix->num_genes-1].id) != 0) {
             matrix->genes = realloc(matrix->genes, ++(matrix->num_genes) * sizeof(Gene));
             matrix->genes[matrix->num_genes-1] = (Gene) { gene_id, NULL, 0 };
+        } else {
+            free(gene_id);
         }
 
         // Prepare gene for storing transcripts
@@ -170,54 +184,59 @@ void free_expression_matrix(ExpressionMatrix *matrix) {
     }
 }
 
-void parse_most_severe_csq(char *most_severe, char ***unique_consequences, int num_unique_consequences, Variant *variant) {
+void parse_most_severe_csq(char **ordered_consequences, int num_ordered_consequences, UniqueAnnotation *unique_annotations, int num_unique_annotations, Variant *variant) {
+    UniqueAnnotation most_severe_annotation;
+    int min = -1;
+    for (int i = 0; i < num_unique_annotations; ++i) {
+        for (int j = 0; j < num_ordered_consequences; ++j) {
+            if (strcmp(unique_annotations[i].consequence, ordered_consequences[j]) == 0) {
+                // Set if current does not already exist
+                if (min == -1) {
+                    most_severe_annotation = unique_annotations[i];
+                    min = j;
+                    continue;
+                }
 
-    char *ordered_consequences[MAX_CONSEQUENCES];
-    int num_consequences = 0;
+                if (j >= min) continue;
 
-    FILE *file = fopen(most_severe, "r");
-    if (file == NULL) {
-        perror("Error opening file of ordered consequences");
-        EXIT_FAILURE;
-    }
+                if (strcmp(unique_annotations[i].loftee, "HC") == 0) {
+                    if (strcmp(most_severe_annotation.loftee, "LC") == 0 || strcmp(most_severe_annotation.loftee, "") == 0) {
+                        most_severe_annotation = unique_annotations[i];
+                        min = j;
+                        continue;
+                    } else if (strcmp(most_severe_annotation.loftee, "HC") != 0) {
+                        fprintf(stderr, "Unknown LOFTEE annotation encountered: %s\n", unique_annotations[i].loftee);
+                        exit(1);
+                    }
+                } else if (strcmp(unique_annotations[i].loftee, "LC") == 0 || strcmp(unique_annotations[i].loftee, "") == 0) {
+                    if (strcmp(most_severe_annotation.loftee, "HC") == 0) continue;
+                } else {
+                    fprintf(stderr, "Unknown LOFTEE annotation encountered: %s\n", unique_annotations[i].loftee);
+                    exit(1);
+                }
 
-    char line[MAX_CONSEQUENCE_LENGTH];  // Adjust buffer size as needed
-    while (fgets(line, sizeof(line), file)) {
-        line[strcspn(line, "\n")] = '\0';
-        ordered_consequences[num_consequences] = strdup(line);
-        num_consequences++;
-
-        if (num_consequences >= MAX_CONSEQUENCES) {
-            fprintf(stderr, "Exceeded maximum number of consequences: set MAX_CONSEQUENCES parameter\n");
-            break;
-        }
-    }
-
-    fclose(file);
-
-    int min;
-    for (int i = 0; i < num_unique_consequences; ++i) {
-        for (int j = 0; j < num_consequences; ++j) {
-            if (strcmp(variant->annotations[i].consequence, ordered_consequences[j]) == 0 && j < min) {
-                min = j;
+                // Annotations match between current and target annotation
+                if (j < min) {
+                    most_severe_annotation = unique_annotations[i];
+                    min = j;
+                }
             }
         }
     }
 
-    char *most_severe_consequence = ordered_consequences[min];
     for (int i = 0; i < variant->num_annotations; i++) {
-        if (variant->annotations[i].calculate_pext && strcmp(variant->annotations[i].consequence, most_severe_consequence) == 1) {
+        if (variant->annotations[i].calculate_pext && strcmp(variant->annotations[i].consequence, most_severe_annotation.consequence) != 0 && strcmp(variant->annotations[i].loftee, most_severe_annotation.loftee) != 0) {
             variant->annotations[i].calculate_pext = false;
         }
     }
 }
 
-void parse_csq(const char *csq_field, int gene_idx, int transcript_idx, int consequence_idx, int biotype_idx, int cds_pos_idx, Variant *variant) {
+void parse_csq(const char *csq_field, int gene_idx, int transcript_idx, int consequence_idx, int biotype_idx, int cds_pos_idx, int loftee_idx, Variant *variant) {
     char *csq = strdup(csq_field);
     char *csq_copy = csq;
     int clen = 0;
     int maxlen = strlen(csq);
-    while (*csq && *csq != '\0' & maxlen > 0) {
+    while (maxlen > 0 && *csq != '\0') {
         clen = 0;
         while (csq[clen] && csq[clen] != ',' && csq[clen] != '\0') clen++;
         csq[clen] = '\0';
@@ -225,7 +244,7 @@ void parse_csq(const char *csq_field, int gene_idx, int transcript_idx, int cons
         int flen = 0;
         char *fields = strdup(csq);
         char *fields_copy = fields;
-        Annotation annotation = {NULL, NULL, NULL, true};
+        Annotation annotation = {NULL, NULL, NULL, NULL, true};
         for (int i = 0; *fields && *fields != '\0'; i++) {
             flen = 0;
             while (fields[flen] && fields[flen] != '|' && fields[flen] != '\0') flen++;
@@ -237,7 +256,8 @@ void parse_csq(const char *csq_field, int gene_idx, int transcript_idx, int cons
                 char *end = strchr(fields, '&'); // Remove secondary/modifier consequences
                 if (end != NULL) *end = '\0';
                 annotation.consequence = strdup(fields);
-            } else if (i == biotype_idx && strcmp(fields, "protein_coding") != 0) annotation.calculate_pext = false; // Filter to protein_coding biotypes
+            } else if (i == loftee_idx) annotation.loftee = strdup(fields);
+            else if (i == biotype_idx && strcmp(fields, "protein_coding") != 0) annotation.calculate_pext = false; // Filter to protein_coding biotypes
             else if (i == cds_pos_idx && strlen(fields) == 0) annotation.calculate_pext = false; // Filter to variants within CDS
 
             fields += flen + 1;
@@ -250,8 +270,6 @@ void parse_csq(const char *csq_field, int gene_idx, int transcript_idx, int cons
                 variant->num_allocations += 5;
                 variant->annotations = realloc(variant->annotations, variant->num_allocations * sizeof(Annotation));
             }
-
-            // printf("GeneID: %s\tTranscriptID: %s\tConsequence: %s\n", annotation.gene_id, annotation.transcript_id, annotation.consequence);
             variant->annotations[variant->num_annotations++] = annotation;
         }
 
@@ -268,18 +286,19 @@ void free_variant(Variant *variant) {
             free(variant->annotations[i].gene_id);
             free(variant->annotations[i].transcript_id);
             free(variant->annotations[i].consequence);
+            free(variant->annotations[i].loftee);
         }
         free(variant->annotations);
     } 
 }
 
-void get_unique_set(int num_elements, char **list, int *len, char **unique_set[]) {
+void get_unique_gene_set(int num_elements, char **list, int *len, char **unique_set[]) {
     char **ids = malloc(sizeof(char *));
     int nlen = 0, mlen = 1;
 
     for (int i = 0; i < num_elements; i++) {
         char *id = list[i];
-        
+
         bool within_set = false;
         for (int j = 0; j < nlen; j++) {
             if (strcmp(id, ids[j]) == 0) {
@@ -287,11 +306,11 @@ void get_unique_set(int num_elements, char **list, int *len, char **unique_set[]
                 break;
             }
         }
-        
+
         if (within_set) continue;
 
         if (nlen >= mlen) {
-            mlen *= 2;
+            mlen++;
             ids = realloc(ids, mlen * sizeof(char *));
         }
 
@@ -302,13 +321,69 @@ void get_unique_set(int num_elements, char **list, int *len, char **unique_set[]
     *unique_set = ids;
 }
 
+void get_unique_annotation_set(char *gene, Variant *variant, int *len, UniqueAnnotation *unique_annotations[]) {
+    UniqueAnnotation *set = malloc(sizeof(UniqueAnnotation));
+    int nlen = 0;
+
+    for (int i = 0; i < variant->num_annotations; i++) {
+        if (strcmp(variant->annotations[i].gene_id, gene) != 0) continue;
+
+        char *gene_id = variant->annotations[i].gene_id;
+        char *csq = variant->annotations[i].consequence;
+        char *lof = variant->annotations[i].loftee;
+
+        bool within_set = false;
+        for (int j = 0; j < nlen; j++) {
+            if (strcmp(csq, set[j].consequence) == 0 && strcmp(lof, set[j].loftee) == 0) {
+                within_set = true;
+                break;
+            } 
+        }
+
+        if (within_set) continue;
+
+        set = realloc(set, (nlen+1) * sizeof(UniqueAnnotation));
+
+        set[nlen].gene_id = strdup(gene_id);
+        set[nlen].consequence = strdup(csq);
+        set[nlen++].loftee = strdup(lof);
+    }
+
+    *len = nlen;
+    *unique_annotations = set;
+}
+
+int get_matrix_gene_subset(ExpressionMatrix *matrix, int ngenes, char **unique_gene_ids, ExpressionMatrix *out) {
+    ExpressionMatrix subset = {NULL, 0, matrix->tissue_names, matrix->num_tissues}; 
+    subset.genes = malloc(ngenes * sizeof(Gene));
+
+    int i;
+    for (i = 0; i < ngenes; i++) {
+        for (int j = 0; j < matrix->num_genes; j++) {
+            if (strcmp(matrix->genes[j].id, unique_gene_ids[i]) != 0) continue;
+
+            subset.genes[subset.num_genes++] = matrix->genes[j];
+            break;
+        } 
+
+        if (subset.num_genes <= i) {
+            subset.genes[subset.num_genes++] = (Gene) {"", NULL, 0};
+        }
+    }
+
+    *out = subset;
+
+    return 0;
+} 
+
+
 // Compute annotation-level PEXT scores
     // total_expression = sum of expression_level for all transcripts per gene in a tissue
     // base_expression = sum of expression_level for all transcripts per gene touching a variant position with a given consequence in a tissue
     // PEXT (mean_expression_proportion) = mean of base_expression/total_expression for each consequence across all included tissues
-PextAnnotation *calculate_pext(char *most_severe, ExpressionMatrix *matrix, Variant *variant) {
+PextAnnotation *calculate_pext(char **ordered_consequences, int num_ordered_consequences, ExpressionMatrix *matrix, Variant *variant) {
     // Get unique genes
-    int num_genes;
+    int num_genes = 0;
     char **gene_ids = malloc(variant->num_annotations * sizeof(char *));
     for (int i = 0; i < variant->num_annotations; i++, num_genes++) {
         gene_ids[i] = variant->annotations[i].gene_id;
@@ -316,7 +391,10 @@ PextAnnotation *calculate_pext(char *most_severe, ExpressionMatrix *matrix, Vari
 
     int num_unique_genes;
     char **unique_gene_ids;
-    get_unique_set(num_genes, gene_ids, &num_unique_genes, &unique_gene_ids);
+    get_unique_gene_set(num_genes, gene_ids, &num_unique_genes, &unique_gene_ids);
+
+    ExpressionMatrix matrix_subset;
+    get_matrix_gene_subset(matrix, num_unique_genes, unique_gene_ids, &matrix_subset);
 
     // Initialise PextAnnotation struct
     PextAnnotation *pext = malloc(sizeof(PextAnnotation));
@@ -325,135 +403,134 @@ PextAnnotation *calculate_pext(char *most_severe, ExpressionMatrix *matrix, Vari
         exit(EXIT_FAILURE);
     }
 
-    pext->mean_expression_proportion = NULL;
-    pext->num_unique_consequences = 0;
-    pext->unique_consequences = NULL;
+    pext->mean_expression_proportion = malloc(0);
+    pext->num_unique_annotations = 0;
+    pext->unique_annotations = malloc(0);
 
     // Loop over unique genes
     for (int i = 0; i < num_unique_genes; i++) {
         // Calculate total expression for all transcripts for all transcripts per gene in a tissue
-        double *total_expression = calloc(matrix->num_tissues, sizeof(double));
+        double *total_expression = calloc(matrix_subset.num_tissues, sizeof(double));
 
-        for (int j = 0; j < matrix->num_tissues; j++) {
-            for (int k = 0; k < matrix->num_genes; k++) {
-                if (strcmp(unique_gene_ids[i], matrix->genes[k].id) == 0) {
-                    for (int l = 0; l < matrix->genes[k].num_transcripts; l++) {
-                        total_expression[j] += matrix->genes[k].transcripts[l].expression_levels[j];
-                    }
-                }
+        for (int j = 0; j < matrix_subset.num_tissues; j++) {
+            for (int l = 0; l < matrix_subset.genes[i].num_transcripts; l++) {
+                total_expression[j] += matrix_subset.genes[i].transcripts[l].expression_levels[j];
             }
         }
 
         // Get unique consequences per gene
-        int num_consequences = 0;
-        char **consequences = malloc(0);
-        for (int j = 0; j < variant->num_annotations; j++) {
-            if (strcmp(gene_ids[i], variant->annotations[j].gene_id) == 0) {
-                num_consequences++;
-                consequences = realloc(consequences, num_consequences * sizeof(char *));
-                consequences[num_consequences-1] = strdup(variant->annotations[j].consequence);
-            }
-        }
-
-        int num_unique_consequences;
-        char **unique_consequences;
-        get_unique_set(num_consequences, consequences, &num_unique_consequences, &unique_consequences);
+        int num_unique_annotations;
+        UniqueAnnotation *unique_annotations;
+        get_unique_annotation_set(unique_gene_ids[i], variant, &num_unique_annotations, &unique_annotations);
 
         // Update bool calculate_pext to most severe consequence if option is specified
-        if (most_severe) {
-            parse_most_severe_csq(most_severe, &unique_consequences, num_unique_consequences, variant);
+        if (num_ordered_consequences > 0) {
+            parse_most_severe_csq(ordered_consequences, num_ordered_consequences, unique_annotations, num_unique_annotations, variant);
         }
 
-        // Calculate base_expression
-        double **base_expression = malloc(matrix->num_tissues * sizeof(double *));
-        for (int j = 0; j < matrix->num_tissues; j++) {
-            base_expression[j] = calloc(num_unique_consequences, sizeof(double));
+        // Initalise base_expression
+        double **base_expression = malloc(matrix_subset.num_tissues * sizeof(double *));
+        for (int j = 0; j < matrix_subset.num_tissues; j++) {
+            base_expression[j] = calloc(num_unique_annotations, sizeof(double));
         }
 
-        // Loop over unique consequences
-        for (int j = 0; j < matrix->num_tissues; j++) {
-            for (int k = 0; k < matrix->num_genes; k++) {
-                if (strcmp(unique_gene_ids[i], matrix->genes[k].id) == 0) {
-                    for (int l = 0; l < matrix->genes[k].num_transcripts; l++) {
-                        for (int m = 0; m < variant->num_annotations; m++) {
-                            if (strcmp(variant->annotations[m].transcript_id, matrix->genes[k].transcripts[l].id) == 0) {
-                                for (int n = 0; n < num_unique_consequences; n++) {
-                                    if (strcmp(variant->annotations[m].consequence, unique_consequences[n]) == 0) {
-                                        if (variant->annotations[m].calculate_pext) {
-                                            base_expression[j][n] += matrix->genes[k].transcripts[l].expression_levels[j];
-                                        } 
-                                    } 
-                                }
+        // Loop over unique consequences and calculate base_expression
+        for (int l = 0; l < matrix_subset.genes[i].num_transcripts; l++) {
+            for (int m = 0; m < variant->num_annotations; m++) {
+                if (!variant->annotations[m].calculate_pext) continue;
+                if (strcmp(variant->annotations[m].transcript_id, matrix_subset.genes[i].transcripts[l].id) == 0) {
+                    for (int n = 0; n < num_unique_annotations; n++) {
+                        if (strcmp(variant->annotations[m].consequence, unique_annotations[n].consequence) == 0 && strcmp(variant->annotations[m].loftee, unique_annotations[n].loftee) == 0) {
+                            for (int j = 0; j < matrix_subset.num_tissues; j++) {
+                                base_expression[j][n] += matrix_subset.genes[i].transcripts[l].expression_levels[j];
                             }
+
+                            break;
                         }
                     }
+
+                    break;
                 }
             }
         }
 
         // Calculate normalised base_expression by dividing by total_expression per tissue
-        for (int j = 0; j < matrix->num_tissues; j++) {
-            for (int k = 0; k < num_unique_consequences; k++) {
+        for (int j = 0; j < matrix_subset.num_tissues; j++) {
+            for (int k = 0; k < num_unique_annotations; k++) {
                 base_expression[j][k] = total_expression[j] > 0 ? base_expression[j][k] / total_expression[j] : 0.0;
             }
         }
 
-        double *mean_expression_proportion = calloc(num_unique_consequences, sizeof(double));
+        double *mean_expression_proportion = calloc(num_unique_annotations, sizeof(double));
 
         // Calculate mean normalised base_expression across tissues
-        for (int j = 0; j < num_unique_consequences; j++) {
+        for (int j = 0; j < num_unique_annotations; j++) {
             double sum = 0.0;
-            for (int k = 0; k < matrix->num_tissues; k++) {
+            for (int k = 0; k < matrix_subset.num_tissues; k++) {
                 sum += base_expression[k][j];
             }
-            mean_expression_proportion[j] = sum / matrix->num_tissues;
+            mean_expression_proportion[j] = sum / matrix_subset.num_tissues;
         }
 
-        // Print means
-        printf("Column means:\n");
-        for (int j = 0; j < num_unique_consequences; j++) {
-            printf("Column %s mean: %.2f\n", unique_consequences[j], mean_expression_proportion[j]);
+        // Store PextAnnotation
+        int num_pext_scores = pext->num_unique_annotations + num_unique_annotations;
+        pext->mean_expression_proportion = realloc(pext->mean_expression_proportion, num_pext_scores * sizeof(double));
+        pext->unique_annotations = realloc(pext->unique_annotations, num_pext_scores * sizeof(UniqueAnnotation));
+        for (int i = 0; i < num_unique_annotations; i++) {
+            int index = pext->num_unique_annotations + i;
+            pext->mean_expression_proportion[index] = mean_expression_proportion[i];
+            pext->unique_annotations[index] = unique_annotations[i];
         }
-
-        // Return PextAnnotation
-        pext->mean_expression_proportion = mean_expression_proportion;
-        pext->num_unique_consequences = num_unique_consequences;
-        pext->unique_consequences = unique_consequences;
+        pext->num_unique_annotations = num_pext_scores;
 
         // Free memory 
         free(total_expression);
-        for (int j = 0; j < matrix->num_tissues; j++) {
+        for (int j = 0; j < matrix_subset.num_tissues; j++) {
             free(base_expression[j]);
         }
         free(base_expression);
-        free(gene_ids);
-        free(unique_gene_ids);
-        for (int j = 0; j < num_consequences; j++) {
-            free(consequences[j]);
-        }
-        free(consequences);
 
-        return(pext);
     }
 
+    free(matrix_subset.genes);
     free(gene_ids);
+    for (int i = 0; i < num_unique_genes; i++) {
+        free(unique_gene_ids[i]);
+    }
     free(unique_gene_ids);
 
-    return(pext);
+    return pext;
 }
 
 void parse_info_tag(bcf_hdr_t *hdr, bcf1_t *rec, Variant *variant, PextAnnotation *pext) {
     kstring_t str = {0, 0, NULL};
+
     for (int i = 0; i < variant->num_annotations; i++) {
-        for (int j = 0; j < pext->num_unique_consequences; j++) {
+        Annotation a = variant->annotations[i];
+
+        bool is_matched = false;
+        for (int j = 0; j < pext->num_unique_annotations; j++) {
+            UniqueAnnotation u = pext->unique_annotations[j];
+
+            if (strcmp(a.gene_id, u.gene_id) != 0 || strcmp(a.loftee, u.loftee) != 0 || strcmp(a.consequence, u.consequence) != 0) continue;
+            is_matched = true;
+
             if (str.l) kputc(',', &str);
             if (variant->annotations[i].calculate_pext) {
                 ksprintf(&str, "%.3f", pext->mean_expression_proportion[j]);
             } else {
-                ksprintf(&str, "%s", ".");
+                ksprintf(&str, ".");
             }
+
+            break;
+        }
+
+        if (!is_matched) {
+            if (str.l) kputc(',', &str);
+            ksprintf(&str, ".");
         }
     }
+
     bcf_update_info_string(hdr, rec, "PEXT", str.s);
     free(str.s);
 }
@@ -499,9 +576,31 @@ int main(int argc, char *argv[]) {
     }
 
     // Print parsed options
+    char *ordered_consequences[MAX_CONSEQUENCES];
+    int num_ordered_consequences = 0;
     if (most_severe) {
         printf("Most severe: Only calculating PEXT scores across transcripts with the most severe consequence\n");
+
+        FILE *file = fopen(most_severe, "r");
+        if (file == NULL) {
+            perror("Error opening file of ordered consequences");
+            EXIT_FAILURE;
+        }
+
+        char line[MAX_CONSEQUENCE_LENGTH];  // Adjust buffer size as needed
+        while (fgets(line, sizeof(line), file)) {
+            line[strcspn(line, "\n")] = '\0';
+            ordered_consequences[num_ordered_consequences] = strdup(line);
+            num_ordered_consequences++;
+
+            if (num_ordered_consequences >= MAX_CONSEQUENCES) {
+                fprintf(stderr, "Exceeded maximum number of consequences: set MAX_CONSEQUENCES parameter\n");
+                break;
+            }
+        }
+        fclose(file);
     }
+
     if (tissue_group) {
         // Split tissue_group into individual tissue groups
         char *token = strtok(tissue_group, ",");
@@ -570,7 +669,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Calculate PEXT scores per VCF line
-    int gene_idx = -1, transcript_idx = -1, consequence_idx = -1, biotype_idx = -1, cds_pos_idx = -1;
+    int gene_idx = -1, transcript_idx = -1, consequence_idx = -1, biotype_idx = -1, cds_pos_idx = -1, loftee_idx = -1;
 
     // Find the CSQ INFO field
     int csq_id = bcf_hdr_id2int(hdr, BCF_DT_ID, "CSQ");
@@ -600,6 +699,7 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(field, "Consequence") == 0) consequence_idx = num_fields;
                 else if (strcmp(field, "BIOTYPE") == 0) biotype_idx = num_fields;
                 else if (strcmp(field, "CDS_position") == 0) cds_pos_idx = num_fields;
+                else if (strcmp(field, "LoF") == 0) loftee_idx = num_fields;
                 num_fields++;
                 field = strtok(NULL, "|");
             }
@@ -609,7 +709,7 @@ int main(int argc, char *argv[]) {
 
     bcf1_t *rec = bcf_init();
     Variant variant;
-    variant.annotations = malloc(0);
+    variant.annotations = NULL;
     variant.num_annotations = 0;
     variant.num_allocations = 0;
 
@@ -618,13 +718,13 @@ int main(int argc, char *argv[]) {
         char *csq = NULL;
         int n_csq_values = 0;
         bcf_get_info_string(hdr, rec, "CSQ", &csq, &n_csq_values);
-        
+
         if (n_csq_values > 0) {
-            parse_csq(csq, gene_idx, transcript_idx, consequence_idx, biotype_idx, cds_pos_idx, &variant);
+            parse_csq(csq, gene_idx, transcript_idx, consequence_idx, biotype_idx, cds_pos_idx, loftee_idx, &variant);
 
             if (variant.num_annotations == 0) continue;
-            
-            PextAnnotation *pext = calculate_pext(most_severe, matrix, &variant);
+
+            PextAnnotation *pext = calculate_pext(ordered_consequences, num_ordered_consequences, matrix, &variant);
             if (pext) {
                 parse_info_tag(hdr, rec, &variant, pext);
                 bcf_write(output_vcf, hdr, rec);
@@ -632,10 +732,12 @@ int main(int argc, char *argv[]) {
 
                 // Free memory after tag is written
                 free(pext->mean_expression_proportion);
-                for (int i = 0; i < pext->num_unique_consequences; i++) {
-                    free(pext->unique_consequences[i]);
+                for (int i = 0; i < pext->num_unique_annotations; i++) {
+                    free(pext->unique_annotations[i].gene_id);
+                    free(pext->unique_annotations[i].consequence);
+                    free(pext->unique_annotations[i].loftee);
                 }
-                free(pext->unique_consequences);
+                free(pext->unique_annotations);
                 free(pext);
             }
 
@@ -644,6 +746,8 @@ int main(int argc, char *argv[]) {
             variant.num_annotations = 0;
             variant.num_allocations = 0;
         }
+
+        free(csq);
     }
 
     free_expression_matrix(matrix);
@@ -655,3 +759,4 @@ int main(int argc, char *argv[]) {
 
     return EXIT_SUCCESS;
 }
+
