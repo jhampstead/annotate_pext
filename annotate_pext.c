@@ -200,7 +200,7 @@ void parse_most_severe_csq(char **ordered_consequences, int num_ordered_conseque
                 if (j >= min) continue;
 
                 if (strcmp(unique_annotations[i].loftee, "HC") == 0) {
-                    if (strcmp(most_severe_annotation.loftee, "LC") == 0 || strcmp(most_severe_annotation.loftee, "") == 0) {
+                    if (strcmp(most_severe_annotation.loftee, "LC") == 0 || strcmp(most_severe_annotation.loftee, "OS") == 0 || strcmp(most_severe_annotation.loftee, "") == 0) {
                         most_severe_annotation = unique_annotations[i];
                         min = j;
                         continue;
@@ -208,8 +208,19 @@ void parse_most_severe_csq(char **ordered_consequences, int num_ordered_conseque
                         fprintf(stderr, "Unknown LOFTEE annotation encountered: %s\n", unique_annotations[i].loftee);
                         exit(1);
                     }
+                } else if (strcmp(unique_annotations[i].loftee, "OS") == 0) {
+                    if (strcmp(most_severe_annotation.loftee, "HC") == 0) {
+                        continue;
+                    } else if (strcmp(most_severe_annotation.loftee, "LC") == 0 || strcmp(most_severe_annotation.loftee, "") == 0) {
+                        most_severe_annotation = unique_annotations[i];
+                        min = j;
+                        continue;
+                    } else if (strcmp(most_severe_annotation.loftee, "OS") != 0) {
+                        fprintf(stderr, "Unknown LOFTEE annotation encountered: %s\n", unique_annotations[i].loftee);
+                        exit(1);
+                    }
                 } else if (strcmp(unique_annotations[i].loftee, "LC") == 0 || strcmp(unique_annotations[i].loftee, "") == 0) {
-                    if (strcmp(most_severe_annotation.loftee, "HC") == 0) continue;
+                    if (strcmp(most_severe_annotation.loftee, "HC") == 0 || strcmp(most_severe_annotation.loftee, "OS") == 0) continue;
                 } else {
                     fprintf(stderr, "Unknown LOFTEE annotation encountered: %s\n", unique_annotations[i].loftee);
                     exit(1);
